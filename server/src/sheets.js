@@ -26,19 +26,29 @@ const COL = {
 };
 
 function getAuth() {
-  return new google.auth.JWT({
-    email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+  // Handle both literal \n sequences and already-expanded newlines
+  const rawKey = process.env.GOOGLE_PRIVATE_KEY || '';
+  const privateKey = rawKey.includes('\\n')
+    ? rawKey.replace(/\\n/g, '\n')
+    : rawKey;
+
+  return new google.auth.GoogleAuth({
+    credentials: {
+      client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      private_key: privateKey,
+    },
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 }
 
-function getSheets() {
-  return google.sheets({ version: 'v4', auth: getAuth() });
+async function getSheets() {
+  const auth = getAuth();
+  const client = await auth.getClient();
+  return google.sheets({ version: 'v4', auth: client });
 }
 
 async function getRows() {
-  const sheets = getSheets();
+  const sheets = await getSheets();
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
     range: `${SHEET_NAME}!A2:R`,
@@ -76,7 +86,7 @@ function rowToObject(row, rowNum) {
 }
 
 async function updateRow(rowNum, patch) {
-  const sheets = getSheets();
+  const sheets = await getSheets();
 
   const updates = [];
 
