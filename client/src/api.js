@@ -1,24 +1,21 @@
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
-export async function fetchFiles() {
-  const res = await fetch(`${BASE}/api/files`);
-  if (!res.ok) throw new Error('Failed to fetch files');
+export async function fetchRows() {
+  const res = await fetch(`${BASE}/api/rows`);
+  if (!res.ok) throw new Error('Failed to fetch sheet rows');
   return res.json();
 }
 
-export async function fetchProcessed() {
-  const res = await fetch(`${BASE}/api/processed`);
-  if (!res.ok) throw new Error('Failed to fetch processed clips');
-  return res.json();
-}
-
-export async function startJob(videoKey, csvKey) {
+export async function startJob(rowNum) {
   const res = await fetch(`${BASE}/api/process`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ videoKey, csvKey }),
+    body: JSON.stringify({ rowNum }),
   });
-  if (!res.ok) throw new Error('Failed to start job');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to start job');
+  }
   return res.json();
 }
 

@@ -20,3 +20,9 @@ services:
         value: SAT/RAW/
       - key: SAT_PROCESSED_PREFIX
         value: SAT/PROCESSED/
+      - key: GOOGLE_SHEET_ID
+        value: 1Vt9himNM4Neo0FiVL6Fxaf2QmqOUuj0vsydQr_q5FDk
+      - key: GOOGLE_SERVICE_ACCOUNT_EMAIL
+        sync: false
+      - key: GOOGLE_PRIVATE_KEY
+        sync: false
