@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: clipping-tool-server
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_REGION
+        value: us-east-2
+      - key: S3_BUCKET
+        value: kp-mm-kpevideo
+      - key: SAT_RAW_PREFIX
+        value: SAT/RAW/
+      - key: SAT_PROCESSED_PREFIX
+        value: SAT/PROCESSED/

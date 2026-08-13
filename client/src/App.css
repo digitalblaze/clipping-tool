@@ -1,0 +1,125 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #0f1117;
+  color: #e1e1e8;
+  min-height: 100vh;
+}
+
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+header { margin-bottom: 2rem; }
+header h1 { font-size: 1.8rem; font-weight: 700; color: #fff; }
+.subtitle { color: #888; margin-top: 0.25rem; font-size: 0.9rem; }
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid #2a2a3a;
+  padding-bottom: 0.5rem;
+}
+
+.tabs button {
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.tabs button:hover { color: #e1e1e8; background: #1e1e2e; }
+.tabs button.active { color: #fff; background: #2a2a4a; font-weight: 600; }
+
+table { width: 100%; border-collapse: collapse; }
+
+th {
+  text-align: left;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #666;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #2a2a3a;
+}
+
+td {
+  padding: 0.65rem 0.75rem;
+  font-size: 0.875rem;
+  border-bottom: 1px solid #1e1e2e;
+  word-break: break-all;
+}
+
+tr:hover td { background: #1a1a2a; }
+
+.has-csv { color: #4caf50; }
+.no-csv { color: #f44336; font-style: italic; }
+
+button {
+  background: #3a3a6a;
+  color: #e1e1e8;
+  border: none;
+  padding: 0.4rem 0.9rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.825rem;
+  transition: background 0.15s;
+}
+
+button:hover:not(:disabled) { background: #4a4a8a; }
+button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.empty { color: #666; font-size: 0.875rem; padding: 2rem 0; text-align: center; }
+
+.job-list { display: flex; flex-direction: column; gap: 0.75rem; }
+
+.job-row {
+  background: #1a1a2a;
+  border: 1px solid #2a2a3a;
+  border-radius: 6px;
+  padding: 1rem;
+}
+
+.job-meta { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+.job-video { font-weight: 600; font-size: 0.875rem; }
+.job-status { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; }
+.job-clips { font-size: 0.8rem; color: #888; }
+
+.progress-bar {
+  height: 4px;
+  background: #2a2a3a;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 0.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #2196f3;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+.job-output { margin-top: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+.clip-key {
+  background: #1e2e1e;
+  border: 1px solid #2a4a2a;
+  color: #4caf50;
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  font-family: monospace;
+}
+
+.job-error { color: #f44336; font-size: 0.8rem; margin-top: 0.5rem; }
+.loading, .error { text-align: center; padding: 4rem; color: #888; }
+.error { color: #f44336; }
