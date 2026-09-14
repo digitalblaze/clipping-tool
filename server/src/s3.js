@@ -1,4 +1,6 @@
 const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const { Upload } = require('@aws-sdk/lib-storage');
 require('dotenv').config();
 
 const s3 = new S3Client({
@@ -35,4 +37,28 @@ async function uploadFile(key, body, contentType = 'video/mp4') {
   return s3.send(cmd);
 }
 
-module.exports = { s3, BUCKET, RAW_PREFIX, PROCESSED_PREFIX, listRawFiles, getObject, uploadFile };
+// Streams from a readable (e.g. fs.createReadStream) so a clip never has to
+// sit in memory in one piece — Render's free instance only has 512MB.
+async function uploadStream(key, body, contentType = 'video/mp4') {
+  const upload = new Upload({
+    client: s3,
+    params: { Bucket: BUCKET, Key: key, Body: body, ContentType: contentType },
+  });
+  return upload.done();
+}
+
+// The bucket is private: an unauthenticated GET of SAT/PROCESSED/* returns 403.
+// Brightcove's ingest API fetches the URL server-side, so it needs a presigned
+// one. SigV4 caps expiry at 7 days, which is far longer than an ingest needs.
+const PRESIGN_MAX_SECONDS = 7 * 24 * 60 * 60;
+
+async function presignGet(key, expiresIn = PRESIGN_MAX_SECONDS) {
+  const cmd = new GetObjectCommand({ Bucket: BUCKET, Key: key });
+  return getSignedUrl(s3, cmd, { expiresIn: Math.min(expiresIn, PRESIGN_MAX_SECONDS) });
+}
+
+module.exports = {
+  s3, BUCKET, RAW_PREFIX, PROCESSED_PREFIX,
+  listRawFiles, getObject, uploadFile, uploadStream, presignGet,
+  PRESIGN_MAX_SECONDS,
+};

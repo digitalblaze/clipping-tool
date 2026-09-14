@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { getRows, getReadyRows } = require('./sheets');
-const { processRow } = require('./processor');
+const { processRow, processClipJob } = require('./processor');
 const { createJob, getJob, listJobs } = require('./jobs');
 
 const app = express();
@@ -10,6 +10,52 @@ app.use(cors());
 app.use(express.json());
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+// Shared secret with the sheet's Apps Script (its CLIP_SERVICE_TOKEN).
+const CLIP_SERVICE_TOKEN = process.env.CLIP_SERVICE_TOKEN;
+
+function authorizeClipService(req, res) {
+  if (!CLIP_SERVICE_TOKEN) {
+    res.status(503).json({ error: 'CLIP_SERVICE_TOKEN is not configured on the server' });
+    return false;
+  }
+  if (req.get('X-Clip-Token') !== CLIP_SERVICE_TOKEN) {
+    res.status(401).json({ error: 'Invalid or missing X-Clip-Token' });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Clip service webhook called by step 3 of the sheet's Apps Script pipeline.
+ * Accepts that script's payload verbatim and answers with { jobId }, which it
+ * writes into the sheet's Clip Job ID column.
+ */
+app.post('/api/clip-jobs', (req, res) => {
+  if (!authorizeClipService(req, res)) return;
+
+  const { row, classTitle, sourceUrl, clips } = req.body || {};
+
+  if (!Number.isInteger(row) || row < 2) {
+    return res.status(400).json({ error: 'row must be an integer >= 2' });
+  }
+  if (!sourceUrl) return res.status(400).json({ error: 'sourceUrl is required' });
+  if (!Array.isArray(clips) || clips.length === 0) {
+    return res.status(400).json({ error: 'clips must be a non-empty array' });
+  }
+  const badClip = clips.findIndex(c =>
+    !Number.isFinite(c?.startMs) || !Number.isFinite(c?.endMs) || c.endMs <= c.startMs);
+  if (badClip !== -1) {
+    return res.status(400).json({ error: `clips[${badClip}] has an invalid startMs/endMs range` });
+  }
+
+  const title = classTitle || `Row ${row}`;
+  const jobId = createJob(title);
+  res.json({ jobId });
+
+  processClipJob(jobId, { row, classTitle: title, sourceUrl, clips })
+    .catch(err => console.error(`Clip job ${jobId} (row ${row}) failed:`, err.message));
+});
 
 // All rows from the sheet
 app.get('/api/rows', async (req, res) => {

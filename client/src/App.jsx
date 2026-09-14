@@ -2,15 +2,21 @@ import { useState, useEffect, useCallback } from 'react';
 import { fetchRows, startJob, fetchJob, fetchJobs } from './api';
 import './App.css';
 
+// Matches the status vocabulary the sheet's Apps Script pipeline uses.
 const STATUS_COLOR = {
-  'Moments Found': '#f0a500',
-  'Processing':    '#2196f3',
-  'Clipped':       '#4caf50',
-  'Error':         '#f44336',
+  'Assets Ready':      '#9c27b0',
+  'Moments Found':     '#f0a500',
+  'Clips: processing': '#2196f3',
+  'Clips: done':       '#4caf50',
+  'Published':         '#4caf50',
 };
 
 function statusColor(s) {
-  return STATUS_COLOR[s] || '#888';
+  if (STATUS_COLOR[s]) return STATUS_COLOR[s];
+  if (String(s).startsWith('Error') || String(s).startsWith('Clips: error')) return '#f44336';
+  if (String(s).startsWith('Waiting') || String(s).startsWith('Pulling')) return '#f0a500';
+  if (String(s).startsWith('Published')) return '#4caf50';
+  return '#888';
 }
 
 function jobStatusColor(s) {
