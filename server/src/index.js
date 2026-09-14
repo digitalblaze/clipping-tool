@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { getRows, getReadyRows } = require('./sheets');
+const { listPrefix, getObject, presignGet, PROCESSED_PREFIX, RAW_PREFIX } = require('./s3');
+const { parseVtt } = require('./vtt');
 const { processRow, processClipJob } = require('./processor');
 const { createJob, getJob, listJobs } = require('./jobs');
 
@@ -62,6 +64,67 @@ app.get('/api/rows', async (req, res) => {
   try {
     const rows = await getRows();
     res.json({ rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Everything the UI needs to show one class: the finished clips, the full
+ * recording, and the transcript.
+ *
+ * Assets are looked up in S3 by the row's slug rather than from the sheet's
+ * Drive links — the service account cannot read those Drive files, and the
+ * bucket is private, so each asset is handed back as a presigned URL the
+ * browser can play directly.
+ */
+app.get('/api/rows/:rowNum/assets', async (req, res) => {
+  const rowNum = Number(req.params.rowNum);
+  if (!Number.isInteger(rowNum)) return res.status(400).json({ error: 'bad rowNum' });
+
+  try {
+    const row = (await getRows()).find(r => r.rowNum === rowNum);
+    if (!row) return res.status(404).json({ error: `Row ${rowNum} not found` });
+
+    const [processed, raw] = await Promise.all([
+      listPrefix(`${PROCESSED_PREFIX}${row.slug}`),
+      listPrefix(`${RAW_PREFIX}${row.slug}`),
+    ]);
+
+    const clips = await Promise.all(
+      processed
+        .filter(o => o.Key.endsWith('.mp4'))
+        .sort((a, b) => a.Key.localeCompare(b.Key))
+        .map(async (o, i) => ({
+          key: o.Key,
+          name: o.Key.split('/').pop(),
+          bytes: o.Size,
+          url: await presignGet(o.Key),
+          moment: row.moments[i] || null,
+        })));
+
+    const sourceObj = raw.find(o => o.Key.endsWith('-source.mp4'));
+    const vttObj = raw.find(o => o.Key.endsWith('.vtt'));
+
+    let transcript = null;
+    if (vttObj) {
+      const body = await getObject(vttObj.Key);
+      transcript = { cues: parseVtt(await body.transformToString('utf-8')) };
+    }
+
+    res.json({
+      row: {
+        rowNum: row.rowNum, title: row.title, date: row.date, status: row.status,
+        duration: row.duration, meetingId: row.meetingId, moments: row.moments,
+        brightcove: row.brightcove, error: row.error, slug: row.slug,
+      },
+      clips,
+      source: sourceObj
+        ? { key: sourceObj.Key, bytes: sourceObj.Size, url: await presignGet(sourceObj.Key) }
+        : null,
+      transcript,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

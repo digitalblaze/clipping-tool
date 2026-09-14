@@ -21,6 +21,12 @@ async function listRawFiles() {
   return (res.Contents || []).map(obj => obj.Key);
 }
 
+async function listPrefix(prefix) {
+  const cmd = new ListObjectsV2Command({ Bucket: BUCKET, Prefix: prefix });
+  const res = await s3.send(cmd);
+  return (res.Contents || []).filter(o => o.Size > 0);
+}
+
 async function getObject(key) {
   const cmd = new GetObjectCommand({ Bucket: BUCKET, Key: key });
   const res = await s3.send(cmd);
@@ -59,6 +65,6 @@ async function presignGet(key, expiresIn = PRESIGN_MAX_SECONDS) {
 
 module.exports = {
   s3, BUCKET, RAW_PREFIX, PROCESSED_PREFIX,
-  listRawFiles, getObject, uploadFile, uploadStream, presignGet,
+  listRawFiles, listPrefix, getObject, uploadFile, uploadStream, presignGet,
   PRESIGN_MAX_SECONDS,
 };

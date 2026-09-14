@@ -1,206 +1,374 @@
-import { useState, useEffect, useCallback } from 'react';
-import { fetchRows, startJob, fetchJob, fetchJobs } from './api';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { fetchRows, fetchAssets, startJob } from './api';
 import './App.css';
 
-// Matches the status vocabulary the sheet's Apps Script pipeline uses.
-const STATUS_COLOR = {
-  'Assets Ready':      '#9c27b0',
-  'Moments Found':     '#f0a500',
-  'Clips: processing': '#2196f3',
-  'Clips: done':       '#4caf50',
-  'Published':         '#4caf50',
+/* ------------------------------------------------------------------ *
+ * Status vocabulary is owned by the Apps Script pipeline on the sheet.
+ * Anything unrecognised falls through to a neutral pill.
+ * ------------------------------------------------------------------ */
+const STATUS_KIND = [
+  [/^Published/, 'done'],
+  [/^Clips: done/, 'done'],
+  [/^Clips: error/, 'error'],
+  [/^Clips/, 'busy'],
+  [/^Moments Found/, 'ready'],
+  [/^Assets Ready/, 'ready'],
+  [/^Error/, 'error'],
+  [/^Waiting|^Pulling|^Finding/, 'busy'],
+];
+const statusKind = s => (STATUS_KIND.find(([re]) => re.test(String(s)))?.[1]) || 'idle';
+
+const fmtClock = ms => {
+  if (!Number.isFinite(ms)) return '—';
+  const t = Math.floor(ms / 1000);
+  const h = Math.floor(t / 3600);
+  const m = String(Math.floor((t % 3600) / 60)).padStart(2, '0');
+  const s = String(t % 60).padStart(2, '0');
+  return h ? `${h}:${m}:${s}` : `${m}:${s}`;
 };
+const fmtMB = b => `${(b / 1048576).toFixed(1)} MB`;
 
-function statusColor(s) {
-  if (STATUS_COLOR[s]) return STATUS_COLOR[s];
-  if (String(s).startsWith('Error') || String(s).startsWith('Clips: error')) return '#f44336';
-  if (String(s).startsWith('Waiting') || String(s).startsWith('Pulling')) return '#f0a500';
-  if (String(s).startsWith('Published')) return '#4caf50';
-  return '#888';
+function Pill({ status }) {
+  return <span className={`pill pill-${statusKind(status)}`}>{status || 'No status'}</span>;
 }
 
-function jobStatusColor(s) {
-  return { queued: '#888', downloading: '#f0a500', processing: '#2196f3', done: '#4caf50', error: '#f44336' }[s] || '#888';
-}
+/* ------------------------------------------------------------------ *
+ * Clip repository
+ * ------------------------------------------------------------------ */
+function ClipCard({ clip, index, onJumpToSource }) {
+  const m = clip.moment;
+  const [copied, setCopied] = useState(false);
 
-function MomentPill({ moment, index }) {
-  const dur = Math.round((moment.endMs - moment.startMs) / 1000);
+  const copy = async () => {
+    await navigator.clipboard.writeText(clip.url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1600);
+  };
+
   return (
-    <div className="moment-pill">
-      <span className="moment-num">{index + 1}</span>
-      <span className="moment-title">{moment.title}</span>
-      <span className="moment-dur">{dur}s</span>
-    </div>
-  );
-}
-
-function JobRow({ job }) {
-  return (
-    <div className="job-row">
-      <div className="job-meta">
-        <span className="job-video">{job.videoKey}</span>
-        <span className="job-status" style={{ color: jobStatusColor(job.status) }}>{job.status}</span>
-        {job.totalClips && <span className="job-clips">{job.clipsProcessed || 0}/{job.totalClips} clips</span>}
+    <article className="clip-card">
+      <div className="clip-video">
+        <video src={clip.url} controls preload="metadata" playsInline />
+        <span className="clip-rank">{index + 1}</span>
       </div>
-      {(job.status === 'processing' || job.status === 'downloading') && (
-        <div className="progress-bar">
-          <div className="progress-fill" style={{ width: `${job.progress}%` }} />
+
+      <div className="clip-body">
+        <h3>{m?.title || clip.name}</h3>
+        {m?.hook && <p className="clip-hook">“{m.hook}”</p>}
+
+        <dl className="clip-meta">
+          <div><dt>Length</dt><dd>{m ? `${Math.round((m.endMs - m.startMs) / 1000)}s` : '—'}</dd></div>
+          <div><dt>Source range</dt><dd>{m ? `${m.startTimecode} → ${m.endTimecode}` : '—'}</dd></div>
+          <div><dt>File</dt><dd>{fmtMB(clip.bytes)}</dd></div>
+        </dl>
+
+        {m?.whyItWorks && <p className="clip-why"><strong>Why it works.</strong> {m.whyItWorks}</p>}
+
+        <div className="clip-actions">
+          {m && (
+            <button onClick={() => onJumpToSource(m.startMs)}>
+              Find in recording
+            </button>
+          )}
+          <a href={clip.url} target="_blank" rel="noreferrer">Open</a>
+          <button onClick={copy}>{copied ? 'Link copied' : 'Copy link'}</button>
         </div>
-      )}
-      {job.status === 'done' && (
-        <div className="job-output">
-          {job.clips.map(c => <div key={c} className="clip-key">{c.split('/').pop()}</div>)}
-        </div>
-      )}
-      {job.error && <div className="job-error">{job.error}</div>}
+      </div>
+    </article>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * Transcript, with the clipped ranges called out inline
+ * ------------------------------------------------------------------ */
+function Transcript({ cues, moments, onSeek }) {
+  const [query, setQuery] = useState('');
+
+  const momentOf = useCallback(ms => {
+    const i = moments.findIndex(m => ms >= m.startMs && ms < m.endMs);
+    return i === -1 ? null : i;
+  }, [moments]);
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return cues;
+    const q = query.toLowerCase();
+    return cues.filter(c => c.text.toLowerCase().includes(q));
+  }, [cues, query]);
+
+  return (
+    <div className="transcript">
+      <div className="transcript-bar">
+        <input
+          type="search"
+          placeholder="Search the transcript…"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+        />
+        <span className="transcript-count">
+          {filtered.length === cues.length
+            ? `${cues.length} lines`
+            : `${filtered.length} of ${cues.length} lines`}
+        </span>
+      </div>
+
+      <ol className="cue-list">
+        {filtered.map((c, i) => {
+          const mi = momentOf(c.startMs);
+          return (
+            <li key={`${c.startMs}-${i}`} className={mi !== null ? `cue in-clip clip-${mi + 1}` : 'cue'}>
+              <button className="cue-time" onClick={() => onSeek(c.startMs)} title="Play from here">
+                {fmtClock(c.startMs)}
+              </button>
+              <p>
+                {mi !== null && <span className="cue-tag">Clip {mi + 1}</span>}
+                {c.text}
+              </p>
+            </li>
+          );
+        })}
+      </ol>
+      {!filtered.length && <p className="empty">No lines match “{query}”.</p>}
     </div>
   );
 }
 
-export default function App() {
-  const [rows, setRows] = useState([]);
-  const [jobs, setJobs] = useState([]);
-  const [activeJobs, setActiveJobs] = useState(new Set());
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState(null);
-  const [tab, setTab] = useState('sheet');
-
-  const loadAll = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    else setRefreshing(true);
-    try {
-      const [{ rows }, { jobs: jobList }] = await Promise.all([fetchRows(), fetchJobs()]);
-      setRows(rows);
-      setJobs(jobList);
-      const running = new Set(jobList.filter(j => j.status !== 'done' && j.status !== 'error').map(j => j.id));
-      setActiveJobs(running);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
-
-  useEffect(() => { loadAll(); }, [loadAll]);
-
-  // Poll active jobs every 2s
-  useEffect(() => {
-    if (activeJobs.size === 0) return;
-    const interval = setInterval(async () => {
-      const updates = await Promise.all([...activeJobs].map(id => fetchJob(id).catch(() => null)));
-      setJobs(prev => {
-        const map = new Map(prev.map(j => [j.id, j]));
-        updates.forEach(u => u && map.set(u.id, u));
-        return Array.from(map.values());
-      });
-      const stillRunning = new Set(updates.filter(u => u && u.status !== 'done' && u.status !== 'error').map(u => u.id));
-      setActiveJobs(stillRunning);
-      if (stillRunning.size === 0) loadAll(true);
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [activeJobs, loadAll]);
-
-  async function handleProcess(row) {
-    try {
-      const { jobId } = await startJob(row.rowNum);
-      const job = await fetchJob(jobId);
-      setJobs(prev => [job, ...prev]);
-      setActiveJobs(prev => new Set([...prev, jobId]));
-      // Optimistically mark row as Processing
-      setRows(prev => prev.map(r => r.rowNum === row.rowNum ? { ...r, status: 'Processing' } : r));
-      setTab('jobs');
-    } catch (e) {
-      alert(`Failed to start job: ${e.message}`);
-    }
+/* ------------------------------------------------------------------ *
+ * Full recording, with the clipped moments marked on the timeline
+ * ------------------------------------------------------------------ */
+function SourcePlayer({ source, moments, duration, videoRef }) {
+  if (!source) {
+    return (
+      <p className="empty">
+        The full recording has not been uploaded for this class yet. Clips and
+        transcript are unaffected.
+      </p>
+    );
   }
 
-  const readyCount = rows.filter(r => r.status === 'Moments Found').length;
-  const runningCount = activeJobs.size;
+  const totalMs = moments.length
+    ? Math.max(...moments.map(m => m.endMs)) * 1.02
+    : 0;
 
-  if (loading) return <div className="loading">Loading sheet data…</div>;
-  if (error) return <div className="error">Error: {error}<br /><small>Check that the server is running and Google Sheets credentials are configured.</small></div>;
+  return (
+    <div className="source">
+      <video ref={videoRef} src={source.url} controls preload="metadata" playsInline />
+
+      <div className="source-meta">
+        <span>{fmtMB(source.bytes)}</span>
+        <span>{duration || '—'}</span>
+        <a href={source.url} target="_blank" rel="noreferrer">Open original</a>
+      </div>
+
+      {moments.length > 0 && (
+        <>
+          <p className="source-hint">Clipped moments — click to jump</p>
+          <div className="timeline">
+            {moments.map((m, i) => (
+              <button
+                key={m.rank ?? i}
+                className={`marker clip-${i + 1}`}
+                style={{ left: `${(m.startMs / (totalMs || 1)) * 100}%` }}
+                title={`${m.startTimecode} — ${m.title}`}
+                onClick={() => {
+                  if (videoRef.current) {
+                    videoRef.current.currentTime = m.startMs / 1000;
+                    videoRef.current.play();
+                  }
+                }}
+              >{i + 1}</button>
+            ))}
+          </div>
+          <ul className="jump-list">
+            {moments.map((m, i) => (
+              <li key={m.rank ?? i}>
+                <button onClick={() => {
+                  if (videoRef.current) {
+                    videoRef.current.currentTime = m.startMs / 1000;
+                    videoRef.current.play();
+                  }
+                }}>
+                  <span className={`dot clip-${i + 1}`} />
+                  <code>{m.startTimecode}</code>
+                  {m.title}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * App
+ * ------------------------------------------------------------------ */
+export default function App() {
+  const [rows, setRows] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [assets, setAssets] = useState(null);
+  const [tab, setTab] = useState('clips');
+  const [loading, setLoading] = useState(true);
+  const [assetsLoading, setAssetsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    fetchRows()
+      .then(({ rows }) => {
+        setRows(rows);
+        if (rows.length) setSelected(rows[0].rowNum);
+      })
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (selected == null) return;
+    setAssetsLoading(true);
+    setAssets(null);
+    fetchAssets(selected)
+      .then(setAssets)
+      .catch(e => setError(e.message))
+      .finally(() => setAssetsLoading(false));
+  }, [selected]);
+
+  const jumpToSource = useCallback(ms => {
+    setTab('recording');
+    // Let the player mount before seeking into it.
+    requestAnimationFrame(() => {
+      if (videoRef.current) {
+        videoRef.current.currentTime = ms / 1000;
+        videoRef.current.play().catch(() => {});
+      }
+    });
+  }, []);
+
+  const run = async rowNum => {
+    try {
+      await startJob(rowNum);
+      alert('Clip job started. The sheet will update as it runs.');
+    } catch (e) {
+      alert(`Could not start: ${e.message}`);
+    }
+  };
+
+  const moments = assets?.row?.moments || [];
+  const clipCount = assets?.clips?.length || 0;
 
   return (
     <div className="app">
-      <header>
-        <div className="header-row">
+      <header className="topbar">
+        <div className="brand">
+          <span className="logo">▶</span>
           <div>
             <h1>Clipping Tool</h1>
-            <p className="subtitle">SAT video processor — cuts clips from Google Sheets moments</p>
+            <p>Class recordings → social-ready clips</p>
           </div>
-          <button className="refresh-btn" onClick={() => loadAll(true)} disabled={refreshing}>
-            {refreshing ? 'Refreshing…' : 'Refresh'}
-          </button>
+        </div>
+        <div className="topbar-meta">
+          <span><strong>{rows.length}</strong> {rows.length === 1 ? 'class' : 'classes'}</span>
+          <span><strong>{rows.filter(r => statusKind(r.status) === 'done').length}</strong> clipped</span>
         </div>
       </header>
 
-      <nav className="tabs">
-        <button className={tab === 'sheet' ? 'active' : ''} onClick={() => setTab('sheet')}>
-          Sheet Rows ({rows.length}) {readyCount > 0 && <span className="badge">{readyCount} ready</span>}
-        </button>
-        <button className={tab === 'jobs' ? 'active' : ''} onClick={() => setTab('jobs')}>
-          Jobs {runningCount > 0 ? <span className="badge running">{runningCount} running</span> : `(${jobs.length})`}
-        </button>
-      </nav>
+      {error && <div className="banner error">{error}</div>}
 
-      {tab === 'sheet' && (
-        <section>
-          {rows.length === 0 ? (
-            <div className="empty">No rows found in the sheet.</div>
-          ) : (
-            <div className="row-list">
-              {rows.map(row => (
-                <div key={row.rowNum} className="sheet-row">
-                  <div className="sheet-row-header">
-                    <div className="sheet-row-title">
-                      <span className="row-title">{row.title || '(untitled)'}</span>
-                      <span className="row-date">{row.date}</span>
-                    </div>
-                    <div className="sheet-row-actions">
-                      <span className="row-status" style={{ color: statusColor(row.status) }}>{row.status}</span>
-                      <button
-                        disabled={row.status !== 'Moments Found'}
-                        onClick={() => handleProcess(row)}
-                        title={row.status !== 'Moments Found' ? `Status: ${row.status}` : 'Clip this video'}
-                      >
-                        Clip
-                      </button>
-                    </div>
-                  </div>
-                  {row.moments?.length > 0 && (
-                    <div className="moments">
-                      {row.moments.map((m, i) => <MomentPill key={i} moment={m} index={i} />)}
-                    </div>
-                  )}
-                  {row.clip1Url && (
-                    <div className="clips-done">
-                      {[row.clip1Url, row.clip2Url, row.clip3Url].filter(Boolean).map(url => (
-                        <a key={url} href={url} target="_blank" rel="noreferrer" className="clip-link">
-                          {url.split('/').pop()}
-                        </a>
-                      ))}
-                    </div>
+      <div className="layout">
+        <aside className="sidebar">
+          <h2>Classes</h2>
+          {loading && <p className="empty">Loading…</p>}
+          {!loading && !rows.length && <p className="empty">No rows in the sheet yet.</p>}
+          <ul className="row-list">
+            {rows.map(r => (
+              <li key={r.rowNum}>
+                <button
+                  className={r.rowNum === selected ? 'row-item active' : 'row-item'}
+                  onClick={() => { setSelected(r.rowNum); setTab('clips'); }}
+                >
+                  <span className="row-title">{r.title || `Row ${r.rowNum}`}</span>
+                  <span className="row-sub">{r.date || '—'} · {r.duration || '—'}</span>
+                  <Pill status={r.status} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </aside>
+
+        <main className="detail">
+          {assetsLoading && <p className="empty">Loading clips, transcript, and recording…</p>}
+
+          {assets && (
+            <>
+              <div className="detail-head">
+                <div>
+                  <h2>{assets.row.title}</h2>
+                  <p className="detail-sub">
+                    {assets.row.date} · {assets.row.duration} · Zoom {assets.row.meetingId}
+                  </p>
+                </div>
+                <div className="detail-head-right">
+                  <Pill status={assets.row.status} />
+                  {statusKind(assets.row.status) === 'ready' && (
+                    <button className="primary" onClick={() => run(assets.row.rowNum)}>
+                      Run clip job
+                    </button>
                   )}
                 </div>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
+              </div>
 
-      {tab === 'jobs' && (
-        <section>
-          {jobs.length === 0 ? (
-            <div className="empty">No jobs yet. Go to Sheet Rows and click Clip.</div>
-          ) : (
-            <div className="job-list">
-              {jobs.map(j => <JobRow key={j.id} job={j} />)}
-            </div>
+              {assets.row.error && <div className="banner error">{assets.row.error}</div>}
+              {assets.row.brightcove && (
+                <div className="banner info">Brightcove: {assets.row.brightcove}</div>
+              )}
+
+              <nav className="tabs">
+                {[
+                  ['clips', `Clips (${clipCount})`],
+                  ['transcript', `Transcript${assets.transcript ? ` (${assets.transcript.cues.length})` : ''}`],
+                  ['recording', 'Full recording'],
+                ].map(([id, label]) => (
+                  <button
+                    key={id}
+                    className={tab === id ? 'tab active' : 'tab'}
+                    onClick={() => setTab(id)}
+                  >{label}</button>
+                ))}
+              </nav>
+
+              {tab === 'clips' && (
+                clipCount ? (
+                  <div className="clip-grid">
+                    {assets.clips.map((c, i) => (
+                      <ClipCard key={c.key} clip={c} index={i} onJumpToSource={jumpToSource} />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty">
+                    No clips in S3 for this class yet. Moments are
+                    {moments.length ? ` ready (${moments.length} found)` : ' not generated yet'}.
+                  </p>
+                )
+              )}
+
+              {tab === 'transcript' && (
+                assets.transcript
+                  ? <Transcript cues={assets.transcript.cues} moments={moments} onSeek={jumpToSource} />
+                  : <p className="empty">No transcript uploaded for this class.</p>
+              )}
+
+              {tab === 'recording' && (
+                <SourcePlayer
+                  source={assets.source}
+                  moments={moments}
+                  duration={assets.row.duration}
+                  videoRef={videoRef}
+                />
+              )}
+            </>
           )}
-        </section>
-      )}
+        </main>
+      </div>
     </div>
   );
 }

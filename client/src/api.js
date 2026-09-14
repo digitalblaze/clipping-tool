@@ -6,6 +6,16 @@ export async function fetchRows() {
   return res.json();
 }
 
+/** Clips, full recording, and transcript for one class — all presigned. */
+export async function fetchAssets(rowNum) {
+  const res = await fetch(`${BASE}/api/rows/${rowNum}/assets`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to load assets');
+  }
+  return res.json();
+}
+
 export async function startJob(rowNum) {
   const res = await fetch(`${BASE}/api/process`, {
     method: 'POST',

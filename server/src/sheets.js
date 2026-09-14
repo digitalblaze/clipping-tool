@@ -68,6 +68,8 @@ function rowToObject(row, rowNum) {
     title:       row[COL.TITLE]        || '',
     date:        row[COL.DATE]         || '',
     status:      row[COL.STATUS]       || '',
+    vttLink:     row[COL.VTT_LINK]     || '',
+    transcriptLink: row[COL.TRANSCRIPT] || '',
     zoomUrl:     row[COL.ZOOM_URL]     || '',
     duration:    row[COL.DURATION]     || '',
     moments,
@@ -75,8 +77,23 @@ function rowToObject(row, rowNum) {
     clip1Url:    row[COL.CLIP_1_URL]   || '',
     clip2Url:    row[COL.CLIP_2_URL]   || '',
     clip3Url:    row[COL.CLIP_3_URL]   || '',
+    brightcove:  row[COL.BRIGHTCOVE]   || '',
     error:       row[COL.ERROR]        || '',
+    slug: slugFor(row[COL.TITLE] || '', row[COL.DATE] || ''),
   };
+}
+
+/**
+ * Asset naming convention used for everything this row owns in S3:
+ *   SAT/RAW/<slug>-source.mp4, SAT/RAW/<slug>-transcript.vtt,
+ *   SAT/PROCESSED/<slug>-clipN.mp4
+ * Derived from the row rather than stored, so no extra sheet columns are
+ * needed — the Apps Script pipeline owns the schema.
+ */
+function slugFor(title, date) {
+  const t = String(title).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 50);
+  const d = String(date).replace(/-/g, '');
+  return d ? `${t}_${d}` : t;
 }
 
 async function updateRow(rowNum, patch) {
@@ -108,4 +125,4 @@ async function updateRow(rowNum, patch) {
   });
 }
 
-module.exports = { getRows, getReadyRows, updateRow };
+module.exports = { getRows, getReadyRows, updateRow, slugFor };
