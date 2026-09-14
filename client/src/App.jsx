@@ -54,7 +54,8 @@ function ClipCard({ clip, index, onJumpToSource }) {
 
       <div className="clip-body">
         <h3>{m?.title || clip.name}</h3>
-        {m?.hook && <p className="clip-hook">“{m.hook}”</p>}
+        {/* Hooks are sometimes already quoted in the sheet — don't double up. */}
+        {m?.hook && <p className="clip-hook">“{m.hook.replace(/^["“”']+|["“”']+$/g, '')}”</p>}
 
         <dl className="clip-meta">
           <div><dt>Length</dt><dd>{m ? `${Math.round((m.endMs - m.startMs) / 1000)}s` : '—'}</dd></div>
