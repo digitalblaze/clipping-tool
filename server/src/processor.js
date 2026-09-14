@@ -21,68 +21,85 @@ const STATUS = {
   ERROR: 'Clips: error',
 };
 
+const USER_AGENT = 'clipping-tool/1.0';
 const MAX_REDIRECTS = 5;
 
 function slugify(str) {
   return String(str).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 60);
 }
 
-function downloadFile(url, destPath, redirectsLeft = MAX_REDIRECTS) {
+/**
+ * Checks the source is fetchable and seekable before we spend time on ffmpeg,
+ * so the sheet gets a readable error instead of an ffmpeg stack trace.
+ *
+ * Also catches an expired Zoom access_token, which does not 401 — Zoom serves
+ * an HTML login page with a 200.
+ */
+function preflightSource(url, redirectsLeft = MAX_REDIRECTS) {
   return new Promise((resolve, reject) => {
     const protocol = url.startsWith('https') ? https : http;
-    const request = protocol.get(url, { headers: { 'User-Agent': 'clipping-tool/1.0' } }, res => {
+    const req = protocol.get(url, {
+      headers: { 'User-Agent': USER_AGENT, Range: 'bytes=0-1023' },
+    }, res => {
       const { statusCode, headers } = res;
+      res.resume();
 
       if ([301, 302, 303, 307, 308].includes(statusCode) && headers.location) {
-        res.resume();
-        if (redirectsLeft <= 0) return reject(new Error('Too many redirects downloading source'));
-        return downloadFile(headers.location, destPath, redirectsLeft - 1).then(resolve, reject);
+        if (redirectsLeft <= 0) return reject(new Error('Too many redirects on source URL'));
+        return preflightSource(headers.location, redirectsLeft - 1).then(resolve, reject);
       }
 
-      if (statusCode !== 200) {
-        res.resume();
-        return reject(new Error(`Download failed: HTTP ${statusCode}`));
-      }
-
-      // An expired Zoom access_token doesn't 401 — Zoom serves an HTML login
-      // page with a 200. Without this check ffmpeg would get handed HTML and
-      // fail with something unreadable.
-      const contentType = headers['content-type'] || '';
-      if (/text\/html/i.test(contentType)) {
-        res.resume();
+      if (/text\/html/i.test(headers['content-type'] || '')) {
         return reject(new Error(
           'Zoom returned an HTML page instead of video — the source URL\'s access_token has ' +
           'expired. Run "Refresh expired Zoom source URLs" on the sheet, then retry.'
         ));
       }
 
-      const file = fs.createWriteStream(destPath);
-      res.pipe(file);
-      file.on('finish', () => file.close(() => resolve()));
-      file.on('error', err => {
-        fs.unlink(destPath, () => {});
-        reject(err);
+      if (statusCode !== 200 && statusCode !== 206) {
+        return reject(new Error(`Source URL returned HTTP ${statusCode}`));
+      }
+
+      resolve({
+        // Without range support ffmpeg has to stream from byte 0 to reach a
+        // late moment. It still works, just slowly.
+        rangeSupported: statusCode === 206 || headers['accept-ranges'] === 'bytes',
+        totalBytes: Number(
+          (headers['content-range'] || '').split('/')[1] || headers['content-length'] || 0),
       });
     });
 
-    request.on('error', err => {
-      fs.unlink(destPath, () => {});
-      reject(err);
+    req.on('error', err => reject(new Error(`Could not reach source URL: ${err.message}`)));
+    req.setTimeout(60000, () => {
+      req.destroy();
+      reject(new Error('Timed out connecting to source URL'));
     });
   });
 }
 
 /**
- * Cuts one clip. Re-encodes rather than stream-copying: `-c copy` can only cut
- * on keyframes, so it snaps the start backwards to the previous one (several
- * seconds on Zoom recordings). The moments are chosen to begin on a sentence
- * and are only padded 1.5s, so that snap would drag in unrelated speech.
+ * Cuts one clip straight from the remote URL. ffmpeg range-requests only the
+ * bytes around the moment (Zoom's CDN sends Accept-Ranges: bytes), so pulling
+ * a 35s clip out of a 3-hour 605MB recording costs seconds and no local disk
+ * beyond the clip itself. That keeps the job well inside Zoom's 1-hour token
+ * life and off the disk limits that killed the download-everything approach.
+ *
+ * Re-encodes rather than stream-copying: `-c copy` can only cut on keyframes
+ * and snaps the start backwards to the previous one (measured 7.83s output for
+ * a requested 5.5s cut at 5s keyframe spacing). Moments are padded only 1.5s,
+ * so that snap would drag in speech from before the moment.
  */
-function cutClip(inputPath, outputPath, startMs, endMs) {
+function cutClip(sourceUrl, outputPath, startMs, endMs) {
   const startSec = startMs / 1000;
   const durationSec = (endMs - startMs) / 1000;
   return new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
+    ffmpeg(sourceUrl)
+      .inputOptions([
+        `-user_agent ${USER_AGENT}`,
+        '-reconnect 1',
+        '-reconnect_streamed 1',
+        '-reconnect_delay_max 5',
+      ])
       .seekInput(startSec)
       .duration(durationSec)
       .videoCodec('libx264')
@@ -115,18 +132,16 @@ async function processClipJob(jobId, job) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clip-'));
 
   try {
-    updateJob(jobId, { status: 'downloading', progress: 5, totalClips: clips.length });
+    updateJob(jobId, { status: 'checking source', progress: 3, totalClips: clips.length });
     await updateRow(row, { status: STATUS.PROCESSING, jobId, error: '' });
 
-    const videoPath = path.join(tmpDir, 'input.mp4');
-    await downloadFile(sourceUrl, videoPath);
-
-    const bytes = fs.statSync(videoPath).size;
-    if (bytes < 1024 * 1024) {
-      throw new Error(`Downloaded source is only ${bytes} bytes — not a usable recording`);
-    }
-
-    updateJob(jobId, { status: 'processing', progress: 15 });
+    const source = await preflightSource(sourceUrl);
+    updateJob(jobId, {
+      status: 'processing',
+      progress: 10,
+      sourceBytes: source.totalBytes,
+      rangeSupported: source.rangeSupported,
+    });
 
     const clipUrls = [];
 
@@ -138,7 +153,10 @@ async function processClipJob(jobId, job) {
         : `${slugify(classTitle)}-clip${clip.index || i + 1}.mp4`;
       const clipPath = path.join(tmpDir, fileName);
 
-      await cutClip(videoPath, clipPath, clip.startMs, clip.endMs);
+      await cutClip(sourceUrl, clipPath, clip.startMs, clip.endMs);
+
+      const bytes = fs.statSync(clipPath).size;
+      if (bytes < 10 * 1024) throw new Error(`Clip ${i + 1} came out empty (${bytes} bytes)`);
 
       const s3Key = `${PROCESSED_PREFIX}${fileName}`;
       await uploadStream(s3Key, fs.createReadStream(clipPath), 'video/mp4');
@@ -147,7 +165,7 @@ async function processClipJob(jobId, job) {
       clipUrls.push(await presignGet(s3Key));
 
       updateJob(jobId, {
-        progress: 15 + Math.round(((i + 1) / clips.length) * 80),
+        progress: 10 + Math.round(((i + 1) / clips.length) * 85),
         clipsProcessed: i + 1,
       });
       fs.unlinkSync(clipPath);
