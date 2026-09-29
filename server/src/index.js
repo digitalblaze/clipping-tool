@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { getRows, getReadyRows } = require('./sheets');
-const { listPrefix, getObject, presignGet, PROCESSED_PREFIX, RAW_PREFIX } = require('./s3');
+const { listPrefix, getObject, presignGet, headObject, keyFromUrl, RAW_PREFIX } = require('./s3');
 const { parseVtt } = require('./vtt');
 const { processRow, processClipJob } = require('./processor');
 const { createJob, getJob, listJobs } = require('./jobs');
@@ -74,10 +74,19 @@ app.get('/api/rows', async (req, res) => {
  * Everything the UI needs to show one class: the finished clips, the full
  * recording, and the transcript.
  *
- * Assets are looked up in S3 by the row's slug rather than from the sheet's
- * Drive links — the service account cannot read those Drive files, and the
- * bucket is private, so each asset is handed back as a presigned URL the
- * browser can play directly.
+ * Clips are resolved from the sheet's own N/O/P columns, not by guessing a
+ * filename — processClipJob is the only thing that ever writes those
+ * columns, so whatever key it actually uploaded to is always recoverable
+ * from there, regardless of what named it (our own slugify, or the Apps
+ * Script step 3's outputKey, which uses a different, incompatible slug:
+ * hyphens instead of underscores, and no date suffix). The stored URL's own
+ * signature may be long expired; only its path (the object key) is reused,
+ * then re-presigned fresh.
+ *
+ * The full recording and transcript aren't written by any automated step
+ * yet (Apps Script step 1 saves those to Drive, which this service account
+ * can't read), so those are still looked up in S3 by the row's slug — that
+ * only ever matches a manual mirror uploaded under that same convention.
  */
 app.get('/api/rows/:rowNum/assets', async (req, res) => {
   const rowNum = Number(req.params.rowNum);
@@ -87,22 +96,27 @@ app.get('/api/rows/:rowNum/assets', async (req, res) => {
     const row = (await getRows()).find(r => r.rowNum === rowNum);
     if (!row) return res.status(404).json({ error: `Row ${rowNum} not found` });
 
-    const [processed, raw] = await Promise.all([
-      listPrefix(`${PROCESSED_PREFIX}${row.slug}`),
-      listPrefix(`${RAW_PREFIX}${row.slug}`),
-    ]);
+    const raw = await listPrefix(`${RAW_PREFIX}${row.slug}`);
 
-    const clips = await Promise.all(
-      processed
-        .filter(o => o.Key.endsWith('.mp4'))
-        .sort((a, b) => a.Key.localeCompare(b.Key))
-        .map(async (o, i) => ({
-          key: o.Key,
-          name: o.Key.split('/').pop(),
-          bytes: o.Size,
-          url: await presignGet(o.Key),
+    const clipUrls = [row.clip1Url, row.clip2Url, row.clip3Url];
+    const clips = (await Promise.all(
+      clipUrls.map(async (storedUrl, i) => {
+        if (!storedUrl) return null;
+        const key = keyFromUrl(storedUrl);
+        if (!key) return null;
+
+        const [head, url] = await Promise.all([headObject(key), presignGet(key)]);
+        if (!head) return null; // recorded but since deleted from S3
+
+        return {
+          key,
+          name: key.split('/').pop(),
+          bytes: head.bytes,
+          url,
           moment: row.moments[i] || null,
-        })));
+        };
+      })
+    )).filter(Boolean);
 
     const sourceObj = raw.find(o => o.Key.endsWith('-source.mp4'));
     const vttObj = raw.find(o => o.Key.endsWith('.vtt'));

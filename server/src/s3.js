@@ -1,4 +1,4 @@
-const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { Upload } = require('@aws-sdk/lib-storage');
 require('dotenv').config();
@@ -63,8 +63,34 @@ async function presignGet(key, expiresIn = PRESIGN_MAX_SECONDS) {
   return getSignedUrl(s3, cmd, { expiresIn: Math.min(expiresIn, PRESIGN_MAX_SECONDS) });
 }
 
+// Returns { bytes } or null if the object is gone. Used to show file size
+// for a clip whose key we only know from a (possibly long-expired) stored
+// URL — HEAD doesn't care that a presign signature has expired, since we
+// only reuse the path portion, never the old query string.
+async function headObject(key) {
+  try {
+    const res = await s3.send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
+    return { bytes: res.ContentLength };
+  } catch (err) {
+    if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) return null;
+    throw err;
+  }
+}
+
+// Pulls the object key out of any URL pointing at this bucket — a plain
+// https://bucket.s3.region.amazonaws.com/key URL or a presigned one with a
+// query string. Virtual-hosted-style URLs put the key directly in the path,
+// so this works even once a presign's own signature has long expired.
+function keyFromUrl(url) {
+  try {
+    return decodeURIComponent(new URL(url).pathname.replace(/^\//, '')) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 module.exports = {
   s3, BUCKET, RAW_PREFIX, PROCESSED_PREFIX,
   listRawFiles, listPrefix, getObject, uploadFile, uploadStream, presignGet,
-  PRESIGN_MAX_SECONDS,
+  headObject, keyFromUrl, PRESIGN_MAX_SECONDS,
 };
