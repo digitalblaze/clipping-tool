@@ -5,9 +5,9 @@ const fs = require('fs');
 const os = require('os');
 const https = require('https');
 const http = require('http');
-const { uploadStream, presignGet, PROCESSED_PREFIX } = require('./s3');
+const { uploadFile, uploadStream, presignGet, PROCESSED_PREFIX, RAW_PREFIX } = require('./s3');
 const { updateJob } = require('./jobs');
-const { updateRow } = require('./sheets');
+const { updateRow, getRows, slugFor } = require('./sheets');
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
@@ -119,6 +119,45 @@ function cutClip(sourceUrl, outputPath, startMs, endMs) {
 }
 
 /**
+ * Opens the source URL as a readable stream, following redirects manually
+ * (plain https.get doesn't). Used only for mirroring the full recording —
+ * the clips themselves never touch this; they range-seek the URL directly.
+ */
+function openSourceStream(url, redirectsLeft = MAX_REDIRECTS) {
+  return new Promise((resolve, reject) => {
+    const protocol = url.startsWith('https') ? https : http;
+    const req = protocol.get(url, { headers: { 'User-Agent': USER_AGENT } }, res => {
+      const { statusCode, headers } = res;
+      if ([301, 302, 303, 307, 308].includes(statusCode) && headers.location) {
+        res.resume();
+        if (redirectsLeft <= 0) return reject(new Error('Too many redirects mirroring source'));
+        return openSourceStream(headers.location, redirectsLeft - 1).then(resolve, reject);
+      }
+      if (statusCode !== 200 && statusCode !== 206) {
+        res.resume();
+        return reject(new Error(`Mirror fetch got HTTP ${statusCode}`));
+      }
+      resolve(res);
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Copies the full recording straight from Zoom into S3 — a pass-through
+ * pipe, never buffered whole on Render's disk or in memory. This is what
+ * makes it survive the free instance: a naive "download to a temp file,
+ * then upload" of the same file was what previously killed the process
+ * (either disk or memory, we never pinned down which) trying to pull a
+ * multi-hour recording. Upload's own multipart chunking only holds a few
+ * MB in memory at a time regardless of the source's total size.
+ */
+async function mirrorSourceToS3(sourceUrl, key) {
+  const stream = await openSourceStream(sourceUrl);
+  await uploadStream(key, stream, 'video/mp4');
+}
+
+/**
  * Runs a clip job posted by the sheet's step 3.
  *
  * Expects the Apps Script payload shape:
@@ -128,7 +167,7 @@ function cutClip(sourceUrl, outputPath, startMs, endMs) {
  * further is added here.
  */
 async function processClipJob(jobId, job) {
-  const { row, classTitle, sourceUrl, clips } = job;
+  const { row, classTitle, sourceUrl, clips, transcriptVtt } = job;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clip-'));
 
   try {
@@ -178,6 +217,25 @@ async function processClipJob(jobId, job) {
       clip3Url: clipUrls[2] || '',
       error: '',
     });
+
+    // Best-effort: the clip job has already succeeded above, so a failure
+    // here (bandwidth, a dropped connection, the Zoom token expiring mid-
+    // transfer) only means the Full Recording / Transcript tabs stay empty
+    // for this class — it must never overwrite the sheet's error column or
+    // flip status away from done.
+    try {
+      updateJob(jobId, { status: 'mirroring', progress: 97 });
+      const liveRow = (await getRows()).find(r => r.rowNum === row);
+      const slug = slugFor((liveRow && liveRow.title) || classTitle, (liveRow && liveRow.date) || '');
+
+      const tasks = [mirrorSourceToS3(sourceUrl, `${RAW_PREFIX}${slug}-source.mp4`)];
+      if (transcriptVtt && transcriptVtt.trim()) {
+        tasks.push(uploadFile(`${RAW_PREFIX}${slug}-transcript.vtt`, Buffer.from(transcriptVtt, 'utf8'), 'text/vtt'));
+      }
+      await Promise.all(tasks);
+    } catch (mirrorErr) {
+      console.error(`Job ${jobId} (row ${row}): mirroring source/transcript failed:`, mirrorErr.message);
+    }
 
     updateJob(jobId, { status: 'done', progress: 100, clips: clipUrls });
   } catch (err) {

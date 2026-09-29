@@ -36,7 +36,7 @@ function authorizeClipService(req, res) {
 app.post('/api/clip-jobs', (req, res) => {
   if (!authorizeClipService(req, res)) return;
 
-  const { row, classTitle, sourceUrl, clips } = req.body || {};
+  const { row, classTitle, sourceUrl, clips, transcriptVtt } = req.body || {};
 
   if (!Number.isInteger(row) || row < 2) {
     return res.status(400).json({ error: 'row must be an integer >= 2' });
@@ -55,7 +55,7 @@ app.post('/api/clip-jobs', (req, res) => {
   const jobId = createJob(title);
   res.json({ jobId });
 
-  processClipJob(jobId, { row, classTitle: title, sourceUrl, clips })
+  processClipJob(jobId, { row, classTitle: title, sourceUrl, clips, transcriptVtt })
     .catch(err => console.error(`Clip job ${jobId} (row ${row}) failed:`, err.message));
 });
 
