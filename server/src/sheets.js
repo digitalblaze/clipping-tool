@@ -96,6 +96,32 @@ function slugFor(title, date) {
   return d ? `${t}_${d}` : t;
 }
 
+/**
+ * Writes to whichever row currently holds this meeting key (column A),
+ * re-resolved fresh rather than trusting a row number captured earlier.
+ *
+ * A clip job can run for several minutes (cutting plus mirroring the full
+ * source). If a human inserts or deletes a row elsewhere in the sheet
+ * during that window, every row below the edit shifts down or up — a row
+ * number cached at job start would then point at the wrong class by the
+ * time the job finally writes its result. Re-resolving by the row's own
+ * identity instead of a position fixes that.
+ *
+ * meetingId isn't a database key — two rows could share it if neither has
+ * been pinned to a specific occurrence's UUID yet (see fetchZoomClassRecording
+ * in the sheet's Apps Script). That's a narrower, pre-existing ambiguity,
+ * not one this introduces: it only matters if someone adds two rows for
+ * the same unpinned recurring meeting ID before running step 1 on either.
+ */
+async function updateRowByKey(meetingId, patch) {
+  const rows = await getRows();
+  const match = rows.find(r => r.meetingId === meetingId);
+  if (!match) {
+    throw new Error(`No row found with meeting key "${meetingId}" — it may have been deleted or edited`);
+  }
+  return updateRow(match.rowNum, patch);
+}
+
 async function updateRow(rowNum, patch) {
   const sheets = await getSheets();
 
@@ -125,4 +151,4 @@ async function updateRow(rowNum, patch) {
   });
 }
 
-module.exports = { getRows, getReadyRows, updateRow, slugFor };
+module.exports = { getRows, getReadyRows, updateRow, updateRowByKey, slugFor };

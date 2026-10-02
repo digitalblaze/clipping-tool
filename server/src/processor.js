@@ -7,7 +7,7 @@ const https = require('https');
 const http = require('http');
 const { uploadFile, uploadStream, presignGet, PROCESSED_PREFIX, RAW_PREFIX } = require('./s3');
 const { updateJob } = require('./jobs');
-const { updateRow, getRows, slugFor } = require('./sheets');
+const { updateRow, updateRowByKey, getRows, slugFor } = require('./sheets');
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
@@ -167,12 +167,24 @@ async function mirrorSourceToS3(sourceUrl, key) {
  * further is added here.
  */
 async function processClipJob(jobId, job) {
-  const { row, classTitle, sourceUrl, clips, transcriptVtt } = job;
+  const { row: initialRow, classTitle, sourceUrl, clips, transcriptVtt } = job;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clip-'));
+
+  // Captured now, while initialRow is still guaranteed fresh — the caller
+  // just resolved it moments ago. This job can run for several minutes
+  // (cutting plus mirroring), during which a row's position can shift if
+  // someone edits the sheet elsewhere, so every write below re-resolves by
+  // this key rather than trusting initialRow for the rest of the job.
+  const startRow = (await getRows()).find(r => r.rowNum === initialRow);
+  const meetingKey = startRow ? startRow.meetingId : null;
+
+  function writeRow(patch) {
+    return meetingKey ? updateRowByKey(meetingKey, patch) : updateRow(initialRow, patch);
+  }
 
   try {
     updateJob(jobId, { status: 'checking source', progress: 3, totalClips: clips.length });
-    await updateRow(row, { status: STATUS.PROCESSING, jobId, error: '' });
+    await writeRow({ status: STATUS.PROCESSING, jobId, error: '' });
 
     const source = await preflightSource(sourceUrl);
     updateJob(jobId, {
@@ -210,7 +222,7 @@ async function processClipJob(jobId, job) {
       fs.unlinkSync(clipPath);
     }
 
-    await updateRow(row, {
+    await writeRow({
       status: STATUS.DONE,
       clip1Url: clipUrls[0] || '',
       clip2Url: clipUrls[1] || '',
@@ -225,7 +237,10 @@ async function processClipJob(jobId, job) {
     // flip status away from done.
     try {
       updateJob(jobId, { status: 'mirroring', progress: 97 });
-      const liveRow = (await getRows()).find(r => r.rowNum === row);
+      const rows = await getRows();
+      const liveRow = meetingKey
+        ? rows.find(r => r.meetingId === meetingKey)
+        : rows.find(r => r.rowNum === initialRow);
       const slug = slugFor((liveRow && liveRow.title) || classTitle, (liveRow && liveRow.date) || '');
 
       const tasks = [mirrorSourceToS3(sourceUrl, `${RAW_PREFIX}${slug}-source.mp4`)];
@@ -234,12 +249,12 @@ async function processClipJob(jobId, job) {
       }
       await Promise.all(tasks);
     } catch (mirrorErr) {
-      console.error(`Job ${jobId} (row ${row}): mirroring source/transcript failed:`, mirrorErr.message);
+      console.error(`Job ${jobId} (row ${initialRow}): mirroring source/transcript failed:`, mirrorErr.message);
     }
 
     updateJob(jobId, { status: 'done', progress: 100, clips: clipUrls });
   } catch (err) {
-    await updateRow(row, { status: STATUS.ERROR, error: err.message.slice(0, 300) }).catch(() => {});
+    await writeRow({ status: STATUS.ERROR, error: err.message.slice(0, 300) }).catch(() => {});
     updateJob(jobId, { status: 'error', error: err.message });
     throw err;
   } finally {
