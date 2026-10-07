@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Clipping Tool Runbook</title>
+<link rel="icon" href="/favicon.svg" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@500;600;700;800&family=Source+Sans+3:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    color-scheme: light dark;
+    --bg:#f7f8fb; --panel:#ffffff; --panel-2:#eef1f7; --line:#dbe1ec;
+    --text:#12151f; --muted:#5b6577; --muted-2:#8591a6;
+    --accent:#2f6fe0; --accent-ink:#ffffff;
+    --ready:#9c27b0; --found:#b97300; --busy:#2170c7; --done:#2e9150; --err:#d1402f;
+    --code-bg:#eef1f7; --code-text:#1f2a44;
+    --shadow: 0 1px 2px rgba(20,25,40,.04), 0 8px 24px -12px rgba(20,25,40,.12);
+    font-family: "Source Sans 3", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0f1420; --panel:#171d2b; --panel-2:#1e2637; --line:#2a3447;
+      --text:#e8ecf4; --muted:#94a1b8; --muted-2:#6b7690;
+      --accent:#5b93ff; --accent-ink:#0b1120;
+      --ready:#c77dff; --found:#f0a500; --busy:#4d8dff; --done:#35c9a1; --err:#ff6b6b;
+      --code-bg:#1e2637; --code-text:#cdd6e6;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0f1420; --panel:#171d2b; --panel-2:#1e2637; --line:#2a3447;
+    --text:#e8ecf4; --muted:#94a1b8; --muted-2:#6b7690;
+    --accent:#5b93ff; --accent-ink:#0b1120;
+    --ready:#c77dff; --found:#f0a500; --busy:#4d8dff; --done:#35c9a1; --err:#ff6b6b;
+    --code-bg:#1e2637; --code-text:#cdd6e6;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  }
+
+  *{box-sizing:border-box;}
+  html, body{ margin:0; }
+  body{
+    background:var(--bg); color:var(--text);
+    padding:28px 16px 80px;
+  }
+  .page{ max-width:760px; margin:0 auto; display:flex; flex-direction:column; gap:40px; }
+
+  h1,h2,h3{ font-family:"Libre Franklin",system-ui,sans-serif; text-wrap:balance; margin:0; letter-spacing:-.01em; }
+  p{ margin:0; }
+  code, .mono{ font-family:"IBM Plex Mono",ui-monospace,monospace; }
+
+  .back-link{
+    display:inline-flex; align-items:center; gap:6px; align-self:flex-start;
+    font-family:"IBM Plex Mono",monospace; font-size:12.5px; font-weight:500;
+    color:var(--muted); text-decoration:none;
+  }
+  .back-link:hover{ color:var(--accent); }
+
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace; font-size:12.5px; font-weight:600;
+    letter-spacing:.09em; text-transform:uppercase; color:var(--accent);
+  }
+  header{ display:flex; flex-direction:column; gap:14px; }
+  h1{ font-size:clamp(26px,5vw,34px); font-weight:800; }
+  .lede{ font-size:16.5px; line-height:1.55; color:var(--muted); max-width:62ch; }
+  .lede code{ color:var(--text); background:var(--code-bg); padding:1.5px 6px; border-radius:5px; font-size:.92em; }
+
+  .cta-row{ display:flex; gap:10px; flex-wrap:wrap; margin-top:4px; }
+  .cta{
+    display:inline-flex; align-items:center; gap:8px;
+    font-family:"Libre Franklin",sans-serif; font-weight:700; font-size:14.5px;
+    padding:11px 18px; border-radius:10px; text-decoration:none;
+    border:1px solid transparent;
+  }
+  .cta.primary{ background:var(--accent); color:var(--accent-ink); }
+  .cta.ghost{ background:var(--panel); color:var(--text); border-color:var(--line); }
+  .cta .arrow{ transition:transform .15s ease; }
+  .cta:hover .arrow{ transform:translateX(2px); }
+
+  section{ display:flex; flex-direction:column; gap:16px; }
+  .sec-head{ display:flex; flex-direction:column; gap:4px; }
+  .sec-num{
+    font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:12.5px;
+    color:var(--muted-2); letter-spacing:.06em;
+  }
+  h2{ font-size:21px; font-weight:700; }
+  .sec-note{ color:var(--muted); font-size:14.5px; line-height:1.55; max-width:64ch; }
+
+  .fields{ display:flex; flex-direction:column; gap:10px; }
+  .field{
+    display:grid; grid-template-columns:72px 1fr auto; gap:14px; align-items:start;
+    padding:14px 16px; background:var(--panel); border:1px solid var(--line);
+    border-radius:12px; box-shadow:var(--shadow);
+  }
+  .field .col{
+    font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:13px;
+    color:var(--text); background:var(--code-bg); border-radius:7px;
+    text-align:center; padding:6px 0; height:fit-content;
+  }
+  .field .what b{ font-weight:600; }
+  .field .what{ font-size:14.5px; line-height:1.5; color:var(--text); }
+  .field .what span{ color:var(--muted); }
+  .badge{
+    font-family:"IBM Plex Mono",monospace; font-size:11px; font-weight:600;
+    letter-spacing:.04em; text-transform:uppercase; padding:4px 9px;
+    border-radius:999px; white-space:nowrap; align-self:center;
+  }
+  .badge.req{ background:color-mix(in srgb, var(--err) 16%, transparent); color:var(--err); }
+  .badge.opt{ background:var(--panel-2); color:var(--muted); }
+
+  .steps{ display:flex; flex-direction:column; }
+  .step{ display:grid; grid-template-columns:40px 1fr; gap:16px; padding-bottom:22px; position:relative; }
+  .step:last-child{ padding-bottom:0; }
+  .step-rail{ display:flex; flex-direction:column; align-items:center; }
+  .step-num{
+    width:40px; height:40px; border-radius:50%; background:var(--accent); color:var(--accent-ink);
+    font-family:"Libre Franklin",sans-serif; font-weight:800; font-size:16px;
+    display:grid; place-items:center; flex:none;
+  }
+  .step-line{ width:2px; flex:1; background:var(--line); margin:4px 0; min-height:14px; }
+  .step-body{ display:flex; flex-direction:column; gap:8px; padding-top:2px; }
+  .menu-chip{
+    display:inline-flex; align-items:center; gap:6px; align-self:flex-start;
+    font-family:"IBM Plex Mono",monospace; font-size:13px; font-weight:500;
+    background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:7px 12px; color:var(--text); box-shadow:var(--shadow);
+  }
+  .step-desc{ font-size:14.5px; line-height:1.55; color:var(--muted); max-width:58ch; }
+  .step-desc b{ color:var(--text); font-weight:600; }
+  .result-row{ display:flex; align-items:center; gap:8px; font-size:13.5px; color:var(--muted-2); margin-top:2px; flex-wrap:wrap; }
+  .pill{
+    font-family:"IBM Plex Mono",monospace; font-size:12px; font-weight:600;
+    padding:3px 10px; border-radius:999px; color:#fff;
+  }
+  .pill.ready{ background:var(--ready); } .pill.found{ background:var(--found); }
+  .pill.busy{ background:var(--busy); } .pill.done{ background:var(--done); }
+
+  .utils{ display:flex; flex-direction:column; gap:10px; }
+  .util{
+    display:grid; grid-template-columns:auto 1fr; gap:12px; align-items:start;
+    padding:12px 14px; border:1px dashed var(--line); border-radius:10px;
+  }
+  .util .icon{ font-size:17px; line-height:1.4; }
+  .util .label{ font-family:"IBM Plex Mono",monospace; font-size:12.5px; font-weight:500; color:var(--text); }
+  .util .when{ font-size:13.5px; color:var(--muted); line-height:1.5; margin-top:2px; }
+
+  .tabs-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .tab-card{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:16px; box-shadow:var(--shadow); display:flex; flex-direction:column; gap:6px;
+  }
+  .tab-card h3{ font-size:14.5px; font-weight:700; }
+  .tab-card p{ font-size:13px; line-height:1.5; color:var(--muted); }
+  .heads-up{
+    display:flex; gap:10px; align-items:flex-start; font-size:13.5px; line-height:1.5;
+    color:var(--muted); background:var(--panel-2); border-radius:10px; padding:12px 14px;
+  }
+  .heads-up .dot{ color:var(--found); flex:none; font-size:15px; line-height:1.4; }
+
+  .trouble{ display:flex; flex-direction:column; gap:10px; }
+  .trouble li{ font-size:14.5px; line-height:1.55; color:var(--text); }
+  .trouble li span{ color:var(--muted); }
+  .trouble ol{ margin:0; padding-left:22px; display:flex; flex-direction:column; gap:10px; }
+
+  footer{ color:var(--muted-2); font-size:12.5px; text-align:center; padding-top:8px; }
+
+  @media (max-width:600px){
+    .field{ grid-template-columns:56px 1fr; }
+    .field .badge{ grid-column:1 / -1; justify-self:flex-start; margin-top:2px; }
+    .tabs-grid{ grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <a class="back-link" href="/">← Back to Clipping Tool</a>
+
+  <header>
+    <span class="eyebrow">🎯 SAT Moments — Tester Runbook</span>
+    <h1>Zoom class → three published clips</h1>
+    <p class="lede">
+      This walks through one full pass of the pipeline: what to type into the
+      <code>SAT Classes</code> sheet, which menu items to run and in what order,
+      and where to check the result. Takes about ten minutes once a Zoom
+      recording is ready.
+    </p>
+    <div class="cta-row">
+      <a class="cta primary" href="/">
+        Open the clip page <span class="arrow">→</span>
+      </a>
+      <a class="cta ghost" href="https://docs.google.com/spreadsheets/d/1Vt9himNM4Neo0FiVL6Fxaf2QmqOUuj0vsydQr_q5FDk/edit" target="_blank" rel="noopener">
+        Open the sheet
+      </a>
+    </div>
+  </header>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">01 — BEFORE YOU RUN ANYTHING</span>
+      <h2>Add a row to the sheet</h2>
+      <p class="sec-note">Pick a blank row. Only column A is required — everything else is either optional or filled in automatically by the pipeline.</p>
+    </div>
+    <div class="fields">
+      <div class="field">
+        <span class="col">A</span>
+        <div class="what"><b>Zoom Meeting ID.</b> <span>The plain meeting ID works for whatever recording is most recent. For one specific past class, use that recording's exact UUID instead — find it in the Zoom web portal under Recordings and Transcripts, copy the class's link, and the ID in that link is the UUID.</span></div>
+        <span class="badge req">Required</span>
+      </div>
+      <div class="field">
+        <span class="col">B</span>
+        <div class="what"><b>Class Title.</b> <span>Leave blank to use Zoom's own topic for the recording.</span></div>
+        <span class="badge opt">Optional</span>
+      </div>
+      <div class="field">
+        <span class="col">C</span>
+        <div class="what"><b>Class Date.</b> <span>Leave blank to use the recording's actual start time.</span></div>
+        <span class="badge opt">Optional</span>
+      </div>
+      <div class="field">
+        <span class="col">D–R</span>
+        <div class="what"><b>Everything else.</b> <span>Status, transcript, moments, clip links — all written by the pipeline as it runs. Don't pre-fill any of it.</span></div>
+        <span class="badge opt">Leave blank</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">02 — RUN THESE, IN ORDER</span>
+      <h2>From the 🎯 SAT Moments menu</h2>
+      <p class="sec-note">Run one, wait for the Status column to reach the value shown, then run the next. Don't skip ahead.</p>
+    </div>
+    <div class="steps">
+
+      <div class="step">
+        <div class="step-rail"><div class="step-num">1</div><div class="step-line"></div></div>
+        <div class="step-body">
+          <span class="menu-chip">1. Pull Zoom captions + source URL</span>
+          <p class="step-desc">Fetches the recording from Zoom and saves its transcript. Takes a few seconds.</p>
+          <div class="result-row">Status becomes <span class="pill ready">Assets Ready</span></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-rail"><div class="step-num">2</div><div class="step-line"></div></div>
+        <div class="step-body">
+          <span class="menu-chip">2. Find top 3 viral moments (AI)</span>
+          <p class="step-desc">Reads the transcript and picks three clip-worthy moments. Takes 10–30 seconds.</p>
+          <div class="result-row">Status becomes <span class="pill found">Moments Found</span></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-rail"><div class="step-num">3</div><div class="step-line"></div></div>
+        <div class="step-body">
+          <span class="menu-chip">3. Send clip jobs to clip service</span>
+          <p class="step-desc">Hands the job to the clip service. <b>This step itself is instant</b> — the actual cutting happens afterward on its own. Give it a few minutes; don't run it again while you wait.</p>
+          <div class="result-row">Status moves on its own: <span class="pill busy">Clips: requested</span> → <span class="pill busy">Clips: processing</span> → <span class="pill done">Clips: done</span></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-rail"><div class="step-num">4</div></div>
+        <div class="step-body">
+          <span class="menu-chip">4. Ingest finished clips to Brightcove</span>
+          <p class="step-desc">Only run this once Status actually says <b>Clips: done</b> — running it earlier won't find anything to publish.</p>
+          <div class="result-row">Status becomes <span class="pill done">Published</span>, Brightcove IDs land in column Q</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">03 — SITUATIONAL TOOLS</span>
+      <h2>Not part of the normal run</h2>
+      <p class="sec-note">Below the divider in the same menu. Only reach for these when something specific calls for them.</p>
+    </div>
+    <div class="utils">
+      <div class="util">
+        <span class="icon">🔄</span>
+        <div>
+          <div class="label">Refresh expired Zoom source URLs</div>
+          <div class="when">Only if a row's Zoom link has gone stale — more than about an hour since step 1 — and step 3 or 4 fails with an auth-looking error.</div>
+        </div>
+      </div>
+      <div class="util">
+        <span class="icon">📅</span>
+        <div>
+          <div class="label">Backfill missing dates + durations</div>
+          <div class="when">A repair tool for older rows missing column C or H. Not needed on a freshly run row.</div>
+        </div>
+      </div>
+      <div class="util">
+        <span class="icon">🧹</span>
+        <div>
+          <div class="label">Clear stuck resume triggers</div>
+          <div class="when">Only if a step seems stuck — it was interrupted partway and needs a clean restart.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">04 — CHECK THE RESULT</span>
+      <h2>On the clip page</h2>
+      <p class="sec-note">Pick the class from the sidebar. Three tabs:</p>
+    </div>
+    <div class="tabs-grid">
+      <div class="tab-card">
+        <h3>Clips</h3>
+        <p>The three finished clips, playable, each with its hook and source timecode.</p>
+      </div>
+      <div class="tab-card">
+        <h3>Transcript</h3>
+        <p>The full class transcript, searchable, with the clipped ranges highlighted.</p>
+      </div>
+      <div class="tab-card">
+        <h3>Full Recording</h3>
+        <p>The whole class, with the three clip moments marked on the timeline.</p>
+      </div>
+    </div>
+    <div class="heads-up"><span class="dot">●</span> The page can take about 30 seconds to wake up on its first load after sitting idle — that's normal, not an error. Worth opening it once before showing anyone else.</div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">05 — IF SOMETHING LOOKS WRONG</span>
+      <h2>Quick checks before flagging it</h2>
+    </div>
+    <ol class="trouble">
+      <li><span>Check column R (Error) on that row —</span> it's usually a plain-language explanation of what happened.</li>
+      <li><span>No clips on the page yet?</span> Confirm Status actually reached <b>Clips: done</b>, not just <b>Clips: requested</b> — step 3 finishes in the background.</li>
+      <li><span>Still stuck?</span> Send the row number and whatever column R says to Gregory.</li>
+    </ol>
+  </section>
+
+  <footer>SAT Viral Moments Pipeline · Kaplan</footer>
+
+</div>
+</body>
+</html>

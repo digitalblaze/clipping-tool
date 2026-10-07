@@ -270,6 +270,7 @@ export default function App() {
         <div className="topbar-meta">
           <span><strong>{rows.length}</strong> {rows.length === 1 ? 'class' : 'classes'}</span>
           <span><strong>{rows.filter(r => statusKind(r.status) === 'done').length}</strong> clipped</span>
+          <a className="runbook-link" href="/runbook.html">Instructions</a>
         </div>
       </header>
 
