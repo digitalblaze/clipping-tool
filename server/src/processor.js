@@ -107,6 +107,13 @@ function cutClip(sourceUrl, outputPath, startMs, endMs) {
       .outputOptions([
         '-preset veryfast',
         '-crf 20',
+        // Left unset, x264 auto-detects a thread count from the host's CPU
+        // topology. On a shared/constrained cloud vCPU that detection can be
+        // wrong, and x264's threaded encoder has known segfault bugs under
+        // odd thread counts - this is the first suspect for the SIGSEGV seen
+        // only on Render, never locally. Forcing single-threaded costs a
+        // little speed on a clip this short, not correctness.
+        '-threads 1',
         '-b:a 128k',
         '-pix_fmt yuv420p',
         '-movflags +faststart',
