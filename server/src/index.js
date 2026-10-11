@@ -36,6 +36,54 @@ app.get('/health/ffmpeg', (req, res) => {
   });
 });
 
+// TEMPORARY diagnostic — isolates whether the Render SIGSEGV is in decode
+// (reading the remote source) or encode (libx264). Takes sourceUrl/startMs
+// as query params and runs a 3-second cut two ways: -c copy (no encoding
+// at all, just demux+remux) and a real libx264 re-encode. Not wired to any
+// sheet row or S3 - a raw ffmpeg probe, nothing else. Remove once resolved.
+app.get('/health/cuttest', async (req, res) => {
+  const { execFile } = require('child_process');
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const ffmpegPath = require('ffmpeg-static');
+  const sourceUrl = req.query.sourceUrl;
+  const startMs = Number(req.query.startMs || 0);
+  if (!sourceUrl) return res.status(400).json({ error: 'sourceUrl query param required' });
+
+  const startSec = startMs / 1000;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cuttest-'));
+
+  function run(label, args) {
+    return new Promise(resolve => {
+      const proc = execFile(ffmpegPath, args, { timeout: 30000 }, (err, stdout, stderr) => {
+        resolve({
+          label,
+          ok: !err,
+          code: err?.code ?? 0,
+          signal: err?.signal || null,
+          stderrTail: String(stderr || '').split('\n').slice(-6).join('\n'),
+        });
+      });
+    });
+  }
+
+  const copyOut = path.join(tmpDir, 'copy.mp4');
+  const encodeOut = path.join(tmpDir, 'encode.mp4');
+
+  const copyResult = await run('decode-only (-c copy)', [
+    '-y', '-ss', String(startSec), '-i', sourceUrl, '-t', '3', '-c', 'copy', copyOut,
+  ]);
+  const encodeResult = await run('decode+encode (libx264)', [
+    '-y', '-ss', String(startSec), '-i', sourceUrl, '-t', '3',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-threads', '1',
+    '-c:a', 'aac', '-pix_fmt', 'yuv420p', encodeOut,
+  ]);
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+  res.json({ copyResult, encodeResult });
+});
+
 // Shared secret with the sheet's Apps Script (its CLIP_SERVICE_TOKEN).
 const CLIP_SERVICE_TOKEN = process.env.CLIP_SERVICE_TOKEN;
 
