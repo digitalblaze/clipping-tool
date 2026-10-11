@@ -8,15 +8,15 @@ const { uploadFile, uploadStream, presignGet, PROCESSED_PREFIX, RAW_PREFIX } = r
 const { updateJob } = require('./jobs');
 const { updateRow, updateRowByKey, getRows, slugFor } = require('./sheets');
 
-// scripts/install-ffmpeg.js (npm postinstall) downloads a current static
-// Linux build to vendor/ffmpeg/ffmpeg - @ffmpeg-installer/linux-x64 turned
-// out to be a static build from December 2018, which crashed with SIGSEGV
-// on real clip jobs that never reproduced on the 2021-era darwin-arm64
-// binary used locally. Prefer the fresh one; fall back to the npm package
-// (present on every platform, including when the download step fails) so
-// a deploy never breaks over this.
-const VENDOR_FFMPEG = path.join(__dirname, '..', 'vendor', 'ffmpeg', 'ffmpeg');
-const ffmpegPath = fs.existsSync(VENDOR_FFMPEG) ? VENDOR_FFMPEG : require('@ffmpeg-installer/ffmpeg').path;
+// @ffmpeg-installer/ffmpeg's Linux binary turned out to be a static build
+// from December 2018 (confirmed live on Render via `ffmpeg -version`) -
+// the source of a SIGSEGV on real clip jobs that never reproduced locally,
+// where the darwin-arm64 build is from 2021. A custom script to fetch a
+// fresher binary at install time turned out not to survive every rebuild
+// reliably. ffmpeg-static ships ffmpeg 6.0 (2023) and downloads its binary
+// via npm's own standard install step - the same mechanism every other
+// dependency here already goes through reliably, every single build.
+const ffmpegPath = require('ffmpeg-static');
 ffmpeg.setFfmpegPath(ffmpegPath);
 console.log('processor: using ffmpeg at', ffmpegPath);
 
