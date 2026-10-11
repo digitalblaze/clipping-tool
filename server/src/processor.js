@@ -87,28 +87,51 @@ function preflightSource(url, redirectsLeft = MAX_REDIRECTS) {
 }
 
 /**
- * Cuts one clip straight from the remote URL. ffmpeg range-requests only the
- * bytes around the moment (Zoom's CDN sends Accept-Ranges: bytes), so pulling
- * a 35s clip out of a 3-hour 605MB recording costs seconds and no local disk
- * beyond the clip itself. That keeps the job well inside Zoom's 1-hour token
- * life and off the disk limits that killed the download-everything approach.
- *
- * Re-encodes rather than stream-copying: `-c copy` can only cut on keyframes
- * and snaps the start backwards to the previous one (measured 7.83s output for
- * a requested 5.5s cut at 5s keyframe spacing). Moments are padded only 1.5s,
- * so that snap would drag in speech from before the moment.
+ * Downloads the source to a local file, following redirects (plain
+ * https.get doesn't). Streamed straight to disk, never buffered whole in
+ * memory — proven safe on Render at ~461MB in ~16s.
  */
-function cutClip(sourceUrl, outputPath, startMs, endMs) {
+function downloadToFile(url, destPath, redirectsLeft = MAX_REDIRECTS) {
+  return new Promise((resolve, reject) => {
+    const protocol = url.startsWith('https') ? https : http;
+    const req = protocol.get(url, { headers: { 'User-Agent': USER_AGENT } }, res => {
+      const { statusCode, headers } = res;
+      if ([301, 302, 303, 307, 308].includes(statusCode) && headers.location) {
+        res.resume();
+        if (redirectsLeft <= 0) return reject(new Error('Too many redirects on source URL'));
+        return downloadToFile(headers.location, destPath, redirectsLeft - 1).then(resolve, reject);
+      }
+      if (statusCode !== 200 && statusCode !== 206) {
+        res.resume();
+        return reject(new Error(`Source download got HTTP ${statusCode}`));
+      }
+      const file = fs.createWriteStream(destPath);
+      res.pipe(file);
+      file.on('finish', () => file.close(resolve));
+      file.on('error', reject);
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Cuts one clip from a local copy of the source. This used to seek directly
+ * into the remote Zoom URL - cheap in theory, but ffmpeg's own HTTP client
+ * segfaults doing that on Render specifically (confirmed with a throwaway
+ * diagnostic endpoint: identical -c copy and libx264 runs both crashed
+ * against the remote URL and both succeeded, byte-for-byte, against a local
+ * copy of the same file - ruling out the codec, the binary, and the file
+ * itself, and pointing squarely at remote seeking on this host). Re-encodes
+ * rather than stream-copying: `-c copy` can only cut on keyframes and snaps
+ * the start backwards to the previous one (measured 7.83s output for a
+ * requested 5.5s cut at 5s keyframe spacing) - moments are padded only
+ * 1.5s, so that snap would drag in speech from before the moment.
+ */
+function cutClip(localSourcePath, outputPath, startMs, endMs) {
   const startSec = startMs / 1000;
   const durationSec = (endMs - startMs) / 1000;
   return new Promise((resolve, reject) => {
-    ffmpeg(sourceUrl)
-      .inputOptions([
-        `-user_agent ${USER_AGENT}`,
-        '-reconnect 1',
-        '-reconnect_streamed 1',
-        '-reconnect_delay_max 5',
-      ])
+    ffmpeg(localSourcePath)
       .seekInput(startSec)
       .duration(durationSec)
       .videoCodec('libx264')
@@ -116,13 +139,6 @@ function cutClip(sourceUrl, outputPath, startMs, endMs) {
       .outputOptions([
         '-preset veryfast',
         '-crf 20',
-        // Left unset, x264 auto-detects a thread count from the host's CPU
-        // topology. On a shared/constrained cloud vCPU that detection can be
-        // wrong, and x264's threaded encoder has known segfault bugs under
-        // odd thread counts - this is the first suspect for the SIGSEGV seen
-        // only on Render, never locally. Forcing single-threaded costs a
-        // little speed on a clip this short, not correctness.
-        '-threads 1',
         '-b:a 128k',
         '-pix_fmt yuv420p',
         '-movflags +faststart',
@@ -135,42 +151,11 @@ function cutClip(sourceUrl, outputPath, startMs, endMs) {
 }
 
 /**
- * Opens the source URL as a readable stream, following redirects manually
- * (plain https.get doesn't). Used only for mirroring the full recording —
- * the clips themselves never touch this; they range-seek the URL directly.
+ * Uploads the already-downloaded local source to S3, streamed from disk so
+ * it's never buffered whole in memory regardless of file size.
  */
-function openSourceStream(url, redirectsLeft = MAX_REDIRECTS) {
-  return new Promise((resolve, reject) => {
-    const protocol = url.startsWith('https') ? https : http;
-    const req = protocol.get(url, { headers: { 'User-Agent': USER_AGENT } }, res => {
-      const { statusCode, headers } = res;
-      if ([301, 302, 303, 307, 308].includes(statusCode) && headers.location) {
-        res.resume();
-        if (redirectsLeft <= 0) return reject(new Error('Too many redirects mirroring source'));
-        return openSourceStream(headers.location, redirectsLeft - 1).then(resolve, reject);
-      }
-      if (statusCode !== 200 && statusCode !== 206) {
-        res.resume();
-        return reject(new Error(`Mirror fetch got HTTP ${statusCode}`));
-      }
-      resolve(res);
-    });
-    req.on('error', reject);
-  });
-}
-
-/**
- * Copies the full recording straight from Zoom into S3 — a pass-through
- * pipe, never buffered whole on Render's disk or in memory. This is what
- * makes it survive the free instance: a naive "download to a temp file,
- * then upload" of the same file was what previously killed the process
- * (either disk or memory, we never pinned down which) trying to pull a
- * multi-hour recording. Upload's own multipart chunking only holds a few
- * MB in memory at a time regardless of the source's total size.
- */
-async function mirrorSourceToS3(sourceUrl, key) {
-  const stream = await openSourceStream(sourceUrl);
-  await uploadStream(key, stream, 'video/mp4');
+async function mirrorSourceToS3(localSourcePath, key) {
+  await uploadStream(key, fs.createReadStream(localSourcePath), 'video/mp4');
 }
 
 /**
@@ -204,11 +189,15 @@ async function processClipJob(jobId, job) {
 
     const source = await preflightSource(sourceUrl);
     updateJob(jobId, {
-      status: 'processing',
-      progress: 10,
+      status: 'downloading',
+      progress: 8,
       sourceBytes: source.totalBytes,
       rangeSupported: source.rangeSupported,
     });
+
+    const localSourcePath = path.join(tmpDir, 'source.mp4');
+    await downloadToFile(sourceUrl, localSourcePath);
+    updateJob(jobId, { status: 'processing', progress: 15 });
 
     const clipUrls = [];
 
@@ -220,7 +209,7 @@ async function processClipJob(jobId, job) {
         : `${slugify(classTitle)}-clip${clip.index || i + 1}.mp4`;
       const clipPath = path.join(tmpDir, fileName);
 
-      await cutClip(sourceUrl, clipPath, clip.startMs, clip.endMs);
+      await cutClip(localSourcePath, clipPath, clip.startMs, clip.endMs);
 
       const bytes = fs.statSync(clipPath).size;
       if (bytes < 10 * 1024) throw new Error(`Clip ${i + 1} came out empty (${bytes} bytes)`);
@@ -232,7 +221,7 @@ async function processClipJob(jobId, job) {
       clipUrls.push(await presignGet(s3Key));
 
       updateJob(jobId, {
-        progress: 10 + Math.round(((i + 1) / clips.length) * 85),
+        progress: 15 + Math.round(((i + 1) / clips.length) * 80),
         clipsProcessed: i + 1,
       });
       fs.unlinkSync(clipPath);
@@ -259,7 +248,7 @@ async function processClipJob(jobId, job) {
         : rows.find(r => r.rowNum === initialRow);
       const slug = slugFor((liveRow && liveRow.title) || classTitle, (liveRow && liveRow.date) || '');
 
-      const tasks = [mirrorSourceToS3(sourceUrl, `${RAW_PREFIX}${slug}-source.mp4`)];
+      const tasks = [mirrorSourceToS3(localSourcePath, `${RAW_PREFIX}${slug}-source.mp4`)];
       if (transcriptVtt && transcriptVtt.trim()) {
         tasks.push(uploadFile(`${RAW_PREFIX}${slug}-transcript.vtt`, Buffer.from(transcriptVtt, 'utf8'), 'text/vtt'));
       }
