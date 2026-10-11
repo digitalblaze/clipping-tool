@@ -71,17 +71,34 @@ app.get('/health/cuttest', async (req, res) => {
   const copyOut = path.join(tmpDir, 'copy.mp4');
   const encodeOut = path.join(tmpDir, 'encode.mp4');
 
+  let input = sourceUrl;
+  let downloadMs = null;
+  if (req.query.local === 'true') {
+    const t0 = Date.now();
+    const localPath = path.join(tmpDir, 'source.mp4');
+    const https = require('https');
+    await new Promise((resolve, reject) => {
+      https.get(sourceUrl, r => {
+        const file = fs.createWriteStream(localPath);
+        r.pipe(file);
+        file.on('finish', () => file.close(resolve));
+      }).on('error', reject);
+    });
+    input = localPath;
+    downloadMs = Date.now() - t0;
+  }
+
   const copyResult = await run('decode-only (-c copy)', [
-    '-y', '-ss', String(startSec), '-i', sourceUrl, '-t', '3', '-c', 'copy', copyOut,
+    '-y', '-ss', String(startSec), '-i', input, '-t', '3', '-c', 'copy', copyOut,
   ]);
   const encodeResult = await run('decode+encode (libx264)', [
-    '-y', '-ss', String(startSec), '-i', sourceUrl, '-t', '3',
+    '-y', '-ss', String(startSec), '-i', input, '-t', '3',
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-threads', '1',
     '-c:a', 'aac', '-pix_fmt', 'yuv420p', encodeOut,
   ]);
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
-  res.json({ copyResult, encodeResult });
+  res.json({ usedLocalFile: req.query.local === 'true', downloadMs, copyResult, encodeResult });
 });
 
 // Shared secret with the sheet's Apps Script (its CLIP_SERVICE_TOKEN).
