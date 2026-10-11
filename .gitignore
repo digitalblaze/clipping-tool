@@ -1,5 +1,6 @@
 node_modules/
 .env
+server/vendor/
 *.mp4
 *.mov
 *.avi
