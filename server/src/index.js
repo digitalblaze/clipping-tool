@@ -77,15 +77,28 @@ app.get('/health/cuttest', async (req, res) => {
     const t0 = Date.now();
     const localPath = path.join(tmpDir, 'source.mp4');
     const https = require('https');
-    await new Promise((resolve, reject) => {
-      https.get(sourceUrl, r => {
-        const file = fs.createWriteStream(localPath);
-        r.pipe(file);
-        file.on('finish', () => file.close(resolve));
-      }).on('error', reject);
-    });
+    function fetchFollowingRedirects(url, redirectsLeft = 5) {
+      return new Promise((resolve, reject) => {
+        https.get(url, r => {
+          if ([301, 302, 303, 307, 308].includes(r.statusCode) && r.headers.location) {
+            r.resume();
+            if (redirectsLeft <= 0) return reject(new Error('too many redirects'));
+            return fetchFollowingRedirects(r.headers.location, redirectsLeft - 1).then(resolve, reject);
+          }
+          if (r.statusCode !== 200 && r.statusCode !== 206) {
+            r.resume();
+            return reject(new Error(`HTTP ${r.statusCode}`));
+          }
+          const file = fs.createWriteStream(localPath);
+          r.pipe(file);
+          file.on('finish', () => file.close(resolve));
+        }).on('error', reject);
+      });
+    }
+    await fetchFollowingRedirects(sourceUrl);
     input = localPath;
     downloadMs = Date.now() - t0;
+    var downloadedBytes = fs.statSync(localPath).size;
   }
 
   const copyResult = await run('decode-only (-c copy)', [
@@ -98,7 +111,11 @@ app.get('/health/cuttest', async (req, res) => {
   ]);
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
-  res.json({ usedLocalFile: req.query.local === 'true', downloadMs, copyResult, encodeResult });
+  res.json({
+    usedLocalFile: req.query.local === 'true', downloadMs,
+    downloadedBytes: typeof downloadedBytes !== 'undefined' ? downloadedBytes : null,
+    copyResult, encodeResult,
+  });
 });
 
 // Shared secret with the sheet's Apps Script (its CLIP_SERVICE_TOKEN).
