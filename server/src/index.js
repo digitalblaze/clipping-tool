@@ -9,7 +9,11 @@ const { createJob, getJob, listJobs } = require('./jobs');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Express's JSON body parser defaults to a 100KB limit. step 3's payload now
+// rides the full class transcript along as transcriptVtt (see processor.js's
+// mirroring step) - a raw VTT for a multi-hour class comfortably exceeds
+// that, so the request was rejected as 413 before ever reaching a route.
+app.use(express.json({ limit: '15mb' }));
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
