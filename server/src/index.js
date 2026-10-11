@@ -17,6 +17,26 @@ app.use(express.json({ limit: '15mb' }));
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+// Diagnostic only — exposes no secrets, just which ffmpeg binary is
+// actually running here, to compare against what works locally.
+app.get('/health/ffmpeg', (req, res) => {
+  const ffmpegInfo = require('@ffmpeg-installer/ffmpeg');
+  const { execSync } = require('child_process');
+  let versionOutput = null;
+  try {
+    versionOutput = execSync(`"${ffmpegInfo.path}" -version`, { encoding: 'utf8', timeout: 5000 });
+  } catch (err) {
+    versionOutput = `exec failed: ${err.message}`;
+  }
+  res.json({
+    nodePlatform: process.platform,
+    nodeArch: process.arch,
+    ffmpegPath: ffmpegInfo.path,
+    ffmpegPackageVersion: ffmpegInfo.version,
+    ffmpegVersionOutput: versionOutput,
+  });
+});
+
 // Shared secret with the sheet's Apps Script (its CLIP_SERVICE_TOKEN).
 const CLIP_SERVICE_TOKEN = process.env.CLIP_SERVICE_TOKEN;
 
